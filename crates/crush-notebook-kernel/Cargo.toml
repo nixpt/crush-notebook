@@ -1,0 +1,36 @@
+[package]
+name = "crush-notebook-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords = ["notebook", "crush", "mcp", "kernel", "jupyter"]
+categories = ["development-tools", "command-line-utilities"]
+description = "Notebook kernel for Crush — MCP server evaluating notebook cells via crush-frontend + crush-vm"
+
+[[bin]]
+name = "crush-notebook-kernel"
+path = "src/main.rs"
+
+[features]
+default = []
+jit = ["dep:crush-jit"]
+
+[dependencies]
+crush-notebook-core = { workspace = true }
+crush-frontend = { workspace = true }
+crush-vm = { workspace = true }
+casm = { workspace = true }
+crush-cast = { workspace = true }
+crush-jit = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/crush-notebook-core",
+  "crates/crush-notebook-kernel",
+  "crates/crush-notebook-render",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nixpt/crush-notebook"
+homepage = "https://github.com/nixpt/crush-notebook"
+readme = "README.md"
+authors = ["The Crush Authors"]
+
+[workspace.dependencies]
+crush-notebook-core = { path = "crates/crush-notebook-core", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+# crush-ast crates, from crates.io. For local development against a crush-ast
+# checkout, override them with a `[patch.crates-io]` table in your own
+# `.cargo/config.toml` rather than editing these lines.
+crush-frontend = "0.3.9"
+crush-vm = "0.3.9"
+casm = "0.3.9"
+crush-cast = "0.3.9"
+crush-jit = "0.3.0"

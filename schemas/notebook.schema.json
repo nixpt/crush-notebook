@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Crush Notebook Document",
+  "type": "object",
+  "required": ["meta", "cells"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["title"],
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "frontends": {
+          "type": "array",
+          "items": { "enum": ["crush", "sona", "nepali", "python", "javascript"] }
+        },
+        "created": { "type": "string", "format": "date-time" },
+        "modified": { "type": "string", "format": "date-time" },
+        "author": { "type": "string" },
+        "tags": { "type": "object" }
+      }
+    },
+    "cells": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "source", "state"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": {
+            "oneOf": [
+              {"type": "object", "required": ["type"], "properties": {"type": {"enum": ["crush", "sona", "nepali", "python", "javascript", "markdown", "ai_generated", "ai_query"]}}},
+              {"type": "object", "required": ["type", "agent", "task"], "properties": {"type": {"const": "ai_agent_delegate"}, "agent": {"type": "string"}, "task": {"type": "string"}}}
+            ]
+          },
+          "source": { "type": "string" },
+          "state": {
+            "type": "object",
+            "required": ["status"],
+            "properties": {
+              "status": { "enum": ["pending", "running", "done", "error", "interrupted", "ai_pending"] },
+              "message": { "type": "string" }
+            }
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "collapsed": { "type": "boolean" },
+              "tags": { "type": "array", "items": { "type": "string" } },
+              "wip": {
+                "type": "object",
+                "properties": {
+                  "intent": { "type": "string" },
+                  "started_by": { "type": "string" },
+                  "done": { "type": "array", "items": { "type": "string" } },
+                  "todo": { "type": "array", "items": { "type": "string" } },
+                  "unresolved": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "kind", "data"],
+              "properties": {
+                "id": { "type": "string" },
+                "kind": {
+                  "enum": ["text", "json", "svg", "png", "html", "error", "stream", "ai_proposal"]
+                },
+                "data": { "type": "object" },
+                "timestamp": { "type": "string" }
+              }
+            }
+          },
+          "execution": {
+            "type": "object",
+            "properties": {
+              "steps": { "type": "integer" },
+              "duration_ms": { "type": "integer" },
+              "tier": { "enum": ["none", "cvm1", "fastvm", "jit", "wasm"] },
+              "frontend": { "type": "string" },
+              "jit_compiled": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+/target
+# kernel save sidecars (lock + atomic-write temp files)
+*.crush-nb.lock
+.*.crush-nb.tmp-*
+# rendered output of examples
+/examples/*.html

@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "title": "Hello, Crush Notebook!",
+    "description": "Demonstration notebook: Crush cells sharing variables, a Sona-tagged cell, markdown, and an AI query cell",
+    "frontends": ["crush", "sona"],
+    "created": "2026-07-12",
+    "author": "crush-notebook"
+  },
+  "cells": [
+    {
+      "id": "cell-1",
+      "kind": { "type": "crush" },
+      "source": "// Cell 1 — Crush language\nlet x = 42\nlet y = 10\nlet total = x + y\nlet name = \"Crush Notebook\"\n",
+      "state": { "status": "pending" },
+      "meta": {},
+      "outputs": []
+    },
+    {
+      "id": "cell-2",
+      "kind": { "type": "sona" },
+      "source": "// Cell 2 — a Sona-tagged cell. crush-ast has no separate Sona parser yet:\n// Sona cells compile through the Crush front end, so this uses syntax both accept.\n// `total` comes from cell 1: notebook variables persist across cells.\nlet multiplier = 3;\nlet scaled = total * multiplier;\n",
+      "state": { "status": "pending" },
+      "meta": {},
+      "outputs": []
+    },
+    {
+      "id": "cell-3",
+      "kind": { "type": "markdown" },
+      "source": "## Results\n\nThe computed value is: `scaled = 156`\n\nThis notebook demonstrates:\n- **Crush** native cells\n- variables that persist across cells (`total` → `scaled`)\n- **Sona**-tagged cells (compiled by the Crush front end for now)\n- **Markdown** documentation\n- **@wip** annotations for task tracking",
+      "state": { "status": "done" },
+      "meta": {
+        "wip": {
+          "intent": "Demonstrate full notebook pipeline",
+          "started_by": "agent-a",
+          "done": ["core types", "kernel scaffold", "renderer"],
+          "todo": ["wire real crush-frontend", "add @python polyglot", "JIT tier integration"],
+          "unresolved": []
+        }
+      },
+      "outputs": []
+    },
+    {
+      "id": "cell-4",
+      "kind": { "type": "ai_query", "query": "find the average of [10, 20, 30, 40, 50]" },
+      "source": "// AI query cells are stored, not executed: the kernel has no model backend.\n// An agent answers the query and adds its proposal with notebook_insert_cell.",
+      "state": { "status": "ai_pending" },
+      "meta": {},
+      "outputs": []
+    }
+  ]
+}

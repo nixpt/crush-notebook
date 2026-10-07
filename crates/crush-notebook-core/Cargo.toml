@@ -1,0 +1,18 @@
+[package]
+name = "crush-notebook-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords = ["notebook", "crush", "jupyter", "mcp"]
+categories = ["data-structures", "development-tools"]
+description = "Core types for Crush-Notebook — cells, documents, execution state"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
