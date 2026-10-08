@@ -9,7 +9,7 @@ readme.workspace = true
 authors.workspace = true
 keywords = ["notebook", "crush", "mcp", "kernel", "jupyter"]
 categories = ["development-tools", "command-line-utilities"]
-description = "Notebook kernel for Crush — MCP server evaluating notebook cells via crush-frontend + crush-vm"
+description = "Notebook kernel for Crush — MCP server evaluating notebook cells via crush-frontend, crush-lang-sdk and crush-vm"
 
 [[bin]]
 name = "crush-notebook-kernel"
@@ -25,6 +25,7 @@ crush-frontend = { workspace = true }
 crush-vm = { workspace = true }
 casm = { workspace = true }
 crush-cast = { workspace = true }
+crush-lang-sdk = { workspace = true }
 crush-jit = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

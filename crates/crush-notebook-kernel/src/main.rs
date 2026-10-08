@@ -120,16 +120,22 @@ impl FileStamp {
     }
 }
 
-/// Session variables, in first-binding order. Crush-family cells read them
-/// through an injected prelude and hand their top-level bindings back.
+/// The session a notebook's Crush-family cells share: variables in
+/// first-binding order, plus the functions and structs cells have defined.
+/// Cells read it through an injected prelude and hand their top-level
+/// bindings back.
 struct Vars {
     bindings: Vec<(String, SessionValue)>,
+    functions: Vec<(String, crush_cast::Function)>,
+    structs: Vec<(String, Statement)>,
 }
 
 impl Vars {
     fn new() -> Self {
         Vars {
             bindings: Vec::new(),
+            functions: Vec::new(),
+            structs: Vec::new(),
         }
     }
 
@@ -137,6 +143,20 @@ impl Vars {
         match self.bindings.iter_mut().find(|(n, _)| *n == name) {
             Some(slot) => slot.1 = value,
             None => self.bindings.push((name, value)),
+        }
+    }
+
+    fn define_function(&mut self, name: String, function: crush_cast::Function) {
+        match self.functions.iter_mut().find(|(n, _)| *n == name) {
+            Some(slot) => slot.1 = function,
+            None => self.functions.push((name, function)),
+        }
+    }
+
+    fn define_struct(&mut self, name: String, def: Statement) {
+        match self.structs.iter_mut().find(|(n, _)| *n == name) {
+            Some(slot) => slot.1 = def,
+            None => self.structs.push((name, def)),
         }
     }
 
@@ -157,52 +177,83 @@ impl Vars {
         }
     }
 
-    /// Run a Crush-family cell as the body of `main`, with the session's
-    /// variables in scope, then store the cell's top-level bindings.
+    /// Run a Crush-family cell as a script with the session in scope, then
+    /// store what it defined: top-level `fn`s, `struct`s and bindings.
     ///
-    /// A cell that defines its own `fn main` is a standalone program: it runs
-    /// without the session, as before.
+    /// The cell is parsed as crush-frontend parses a script file (top-level
+    /// statements become `main`), compiled and lowered with crush-lang-sdk,
+    /// and run under [`default_host_caps`].
+    ///
+    /// A cell that defines its own `fn main` is a standalone program: it sees
+    /// the session's functions and structs but not its variables, and its
+    /// locals are not kept.
     fn eval_session_cell(
         &mut self,
         source: &str,
         run: usize,
         lang: &str,
     ) -> (CellState, Vec<CellOutput>, Option<ExecutionStats>) {
-        if source.contains("fn main") {
-            #[cfg(feature = "jit")]
-            if lang == "crush" {
-                return eval_jit_source(source, run);
+        let standalone = defines_main(source);
+        #[cfg(feature = "jit")]
+        if standalone && lang == "crush" && self.functions.is_empty() && self.structs.is_empty() {
+            if let Some(result) = eval_jit_source(source, run) {
+                return result;
             }
-            return eval_crush_source(source, run, lang);
         }
         let t0 = std::time::Instant::now();
-        let mut program = match crush_frontend::parse_source(&format!("fn main() {{\n{source}\n}}"))
-        {
+        let mut program = match crush_frontend::parse_source(source) {
             Ok(p) => p,
             Err(e) => return error_cell(run, format!("Compile: {e}")),
         };
         let entry = program.entry.clone();
-        let Some(main) = program.functions.get_mut(&entry) else {
-            return error_cell(run, format!("Compile: no entry function `{entry}`"));
-        };
+        // What this cell defines, to keep once it compiles.
+        let cell_functions: Vec<(String, crush_cast::Function)> = program
+            .functions
+            .iter()
+            .filter(|(name, _)| **name != entry)
+            .map(|(name, f)| (name.clone(), f.clone()))
+            .collect();
+        for (name, function) in &self.functions {
+            if !program.functions.contains_key(name) {
+                program.functions.insert(name.clone(), function.clone());
+            }
+        }
+        let main = program.functions.entry(entry.clone()).or_default();
+        let cell_structs: Vec<(String, Statement)> = main
+            .body
+            .iter()
+            .filter_map(|stmt| match stmt {
+                Statement::StructDef { name, .. } => Some((name.clone(), stmt.clone())),
+                _ => None,
+            })
+            .collect();
+
+        let mut body: Vec<Statement> = self
+            .structs
+            .iter()
+            .filter(|(name, _)| !cell_structs.iter().any(|(n, _)| n == name))
+            .map(|(_, def)| def.clone())
+            .collect();
         // A cell with its own `return` can't also return the capture (the
         // front end infers one return type per function), so its bindings stay
         // cell-local; it still sees the session's variables.
-        let captured = if contains_return(&main.body) {
+        let captured = if standalone || contains_return(&main.body) {
             Vec::new()
         } else {
             session_capture_names(&self.bindings, &main.body)
         };
-        let mut body: Vec<Statement> = self
-            .bindings
-            .iter()
-            .map(|(name, value)| Statement::VarDecl {
-                name: name.clone(),
-                value: value.to_expr(),
-                type_hint: Default::default(),
-                meta: HashMap::new(),
-            })
-            .collect();
+        if !standalone {
+            body.extend(
+                self.bindings
+                    .iter()
+                    .map(|(name, value)| Statement::VarDecl {
+                        name: name.clone(),
+                        value: value.to_expr(),
+                        type_hint: Default::default(),
+                        meta: HashMap::new(),
+                    }),
+            );
+        }
         body.append(&mut main.body);
         if !captured.is_empty() {
             let mut elements = vec![Expression::StringLiteral {
@@ -222,11 +273,31 @@ impl Vars {
             });
         }
         main.body = body;
+        crush_lang_sdk::compile::prepare_polyglot_blocks(&mut program);
         let mut casm_program = match crush_frontend::compile_cast_owned(program) {
             Ok(p) => p,
             Err(e) => return error_cell(run, format!("Compile: {e}")),
         };
         casm_program.lang = Some(lang.to_string());
+        if !captured.is_empty() {
+            // The VM's scheduler drops `main`'s return value; `halt` keeps the
+            // stack, so the capture array is still on top when the run ends.
+            // `main` has no `return` of its own here, so every `ret` in it
+            // ends the cell.
+            if let Some(main) = casm_program.functions.get_mut(&entry) {
+                for instr in main.body.iter_mut().filter(|i| i.op == "ret") {
+                    instr.op = "halt".to_string();
+                    instr.args = json!({});
+                }
+            }
+        }
+        // Definitions are compile-time: keep them even if the run fails.
+        for (name, function) in cell_functions {
+            self.define_function(name, function);
+        }
+        for (name, def) in cell_structs {
+            self.define_struct(name, def);
+        }
         let result = match run_cvm1(&casm_program) {
             Ok(r) => r,
             Err(e) => return error_cell(run, e),
@@ -274,6 +345,17 @@ impl Vars {
         };
         (CellState::Done, out, Some(stats))
     }
+}
+
+/// Whether a cell declares its own `fn main` (optionally `pub`).
+fn defines_main(source: &str) -> bool {
+    source.lines().any(|line| {
+        let line = line.trim_start();
+        let line = line.strip_prefix("pub ").map_or(line, str::trim_start);
+        line.strip_prefix("fn ")
+            .and_then(|rest| rest.trim_start().strip_prefix("main"))
+            .is_some_and(|rest| rest.trim_start().starts_with('('))
+    })
 }
 
 // ── Session values ───────────────────────────────────────────────────
@@ -516,7 +598,7 @@ impl Kernel {
                 id,
                 json!({
                 "protocolVersion": "2024-11-05", "capabilities": { "tools": {} },
-                "serverInfo": { "name": "crush-notebook-kernel", "version": "0.1.0" } }),
+                "serverInfo": { "name": "crush-notebook-kernel", "version": env!("CARGO_PKG_VERSION") } }),
             ),
             "ping" => RpcResponse::ok(id, json!({})),
             "tools/list" => self.tools_list(id),
@@ -1403,84 +1485,52 @@ fn find_cell_index(doc: &NotebookDocument, cell_id: &str) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-// ── Eval engine (MVP — real crush-frontend is Phase 2) ───────────────────
+// ── Eval engine (crush-frontend + crush-lang-sdk + crush-vm) ─────────────
 
-// ── Eval engine (crush-frontend + crush-vm — Phase 2 / M1) ──────────────
-
-fn eval_crush_source(
-    source: &str,
-    run: usize,
-    lang: &str,
-) -> (CellState, Vec<CellOutput>, Option<ExecutionStats>) {
-    let wrapped = if source.contains("fn main") {
-        source.to_string()
-    } else {
-        format!("fn main() {{\n{}\n}}", source)
-    };
-    let t0 = std::time::Instant::now();
-
-    match crush_frontend::compile_crush_source(&wrapped) {
-        Ok(mut casm_program) => {
-            casm_program.lang = Some(lang.to_string());
-            match run_cvm1(&casm_program) {
-                Ok(result) => {
-                    let mut out = Vec::new();
-                    if !result.output.is_empty() {
-                        out.push(CellOutput {
-                            id: format!("out-{run}"),
-                            kind: OutputKind::Text {
-                                text: result.output.clone(),
-                            },
-                            data: json!({"output": result.output}),
-                            timestamp: None,
-                        });
-                    }
-                    let stats = ExecutionStats {
-                        steps: result.steps,
-                        duration_ms: t0.elapsed().as_millis() as u64,
-                        tier: ExecutionTier::Cvm1,
-                        frontend: lang.into(),
-                        jit_compiled: false,
-                    };
-                    (CellState::Done, out, Some(stats))
-                }
-                Err(e) => error_cell(run, e),
-            }
-        }
-        Err(e) => error_cell(run, format!("Compile: {e}")),
-    }
+/// What a cell may do: the host capabilities a notebook cell runs with.
+///
+/// This is exactly what `crush run FILE` grants with no flags: the VM's
+/// built-ins (`io.print`, the `str.*` and `conv.*` helpers; `io.read` sees an
+/// empty stdin) plus `cson.parse`. No filesystem, network, environment,
+/// process, clock, crypto or polyglot (`@python`/`@javascript`) access: a cell
+/// that calls one of those is refused by the VM.
+fn default_host_caps() -> crush_vm::HostCaps {
+    crush_lang_sdk::HostCapsBuilder::new().build()
 }
 
-/// Lower a compiled program to CVM1 assembly and run it on the PortableVm.
+/// Lower a compiled program to CVM1 with crush-lang-sdk and run it on the
+/// PortableVm under [`default_host_caps`].
+///
+/// `casm_to_vm` is the lowering `crush run` uses; it declares every
+/// capability the program calls in the program's manifest, and the host
+/// capability registry decides what is actually granted.
 fn run_cvm1(casm_program: &casm::Program) -> Result<crush_vm::VmResult, String> {
-    // Convert casm::Program to crush_vm assembly text, then assemble + run via CVM1
-    let assembly = casm_to_assembly(casm_program).map_err(|e| format!("Lower: {e}"))?;
     let program =
-        crush_vm::assemble(&assembly, None, None).map_err(|e| format!("Assemble: {e}"))?;
-    let mut vm = crush_vm::PortableVm::new(program);
-    vm.set_quotas(crush_vm::Quotas {
+        crush_lang_sdk::compile::casm_to_vm(casm_program).map_err(|e| format!("Lower: {e}"))?;
+    let quotas = crush_vm::Quotas {
         max_steps: 1_000_000,
         ..Default::default()
-    });
-    vm.run().map_err(|e| format!("VM error: {e}"))
+    };
+    let caps = default_host_caps();
+    crush_vm::run_with_caps(&program, &quotas, Some(&caps)).map_err(|e| format!("VM error: {e}"))
 }
 
 #[cfg(feature = "jit")]
 /// JIT-compiled cell evaluation via Cranelift (Phase 1 ops only).
 /// Falls back to FastVM if the program uses unsupported opcodes
-/// (capability calls, function calls, arrays/maps, exceptions).
+/// (function calls, arrays/maps, exceptions).
+///
+/// Returns `None` for a program that calls a capability (`print`, `str.*`,
+/// polyglot, …): neither the JIT nor FastVM runs those under the cell's
+/// grant, so the caller runs it on CVM1 instead.
 fn eval_jit_source(
     source: &str,
     run: usize,
-) -> (CellState, Vec<CellOutput>, Option<ExecutionStats>) {
-    let wrapped = if source.contains("fn main") {
-        source.to_string()
-    } else {
-        format!("fn main() {{\n{}\n}}", source)
-    };
+) -> Option<(CellState, Vec<CellOutput>, Option<ExecutionStats>)> {
     let t0 = std::time::Instant::now();
 
-    match crush_frontend::compile_crush_source(&wrapped) {
+    Some(match crush_frontend::compile_crush_source(source) {
+        Ok(casm_program) if calls_capability(&casm_program) => return None,
         Ok(casm_program) => {
             match crush_vm::fastvm::lower_program(&casm_program) {
                 Ok(lowered) => {
@@ -1529,7 +1579,25 @@ fn eval_jit_source(
             }
         }
         Err(e) => error_cell(run, format!("Compile: {e}")),
-    }
+    })
+}
+
+#[cfg(feature = "jit")]
+/// Whether `program` calls anything that is not one of its own functions.
+fn calls_capability(program: &casm::Program) -> bool {
+    program
+        .functions
+        .values()
+        .flat_map(|f| &f.body)
+        .any(|instr| match instr.op.as_str() {
+            "cap_call" | "call_host" | "call_interface" | "exec_lang" => true,
+            "call" => instr
+                .args
+                .get("function")
+                .and_then(Value::as_str)
+                .is_none_or(|name| !program.functions.contains_key(name)),
+            _ => false,
+        })
 }
 
 fn eval_sim_source(
@@ -1647,251 +1715,6 @@ fn fastvm_output(result: crush_vm::fastvm::FastYield, run: usize) -> Vec<CellOut
     }
 }
 
-/// Lower a `casm::Program` to crush_vm assembly text.
-///
-/// Uses `Instruction::to_opcode()` for typed matching — a new opcode variant
-/// in the `casm` crate produces a **compile-time** error here (non-exhaustive
-/// match) rather than silently emitting wrong programs.
-fn casm_to_assembly(casm_program: &casm::Program) -> Result<String, String> {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static LABEL_COUNTER: AtomicU32 = AtomicU32::new(0);
-    fn ulabel() -> String {
-        format!("L{}", LABEL_COUNTER.fetch_add(1, Ordering::Relaxed))
-    }
-
-    let mut lines = Vec::new();
-    let local_funcs: std::collections::HashSet<String> =
-        casm_program.functions.keys().cloned().collect();
-
-    for (fname, func) in &casm_program.functions {
-        let mut slot_map = std::collections::HashMap::new();
-        let mut next_slot: u16 = 0;
-        let mut targets = std::collections::HashMap::<usize, String>::new();
-
-        for instr in &func.body {
-            if let Some(t) = instr.args.get("target").and_then(|v| v.as_u64()) {
-                targets.entry(t as usize).or_insert_with(ulabel);
-            }
-        }
-
-        lines.push(format!(".func {fname}"));
-        for (i, instr) in func.body.iter().enumerate() {
-            if let Some(l) = targets.get(&i) {
-                lines.push(format!("{l}:"));
-            }
-
-            let opcode = instr
-                .to_opcode()
-                .map_err(|e| format!("bad opcode in fn {fname}: {e}"))?;
-
-            let op = match opcode {
-                // Stack
-                casm::OpCode::PushInt(v) => format!("PUSH {v}"),
-                casm::OpCode::PushFloat(v) => format!("PUSH_F64 {v}"),
-                casm::OpCode::PushStr(ref s) => format!("PUSH_STR {s:?}"),
-                casm::OpCode::PushBool(b) => format!("PUSH_BOOL {b}"),
-                casm::OpCode::PushNull => "PUSH_NULL".into(),
-                casm::OpCode::Pop => "POP".into(),
-                casm::OpCode::Dup => "DUP".into(),
-                casm::OpCode::Swap => "SWAP".into(),
-                casm::OpCode::Rot => "ROT".into(),
-                casm::OpCode::Pick(n) => format!("PICK {n}"),
-                casm::OpCode::Roll(n) => format!("ROLL {n}"),
-
-                // Memory
-                casm::OpCode::Store(ref n) => {
-                    let s = if let Some(&slot) = slot_map.get(n) {
-                        slot
-                    } else {
-                        let s = next_slot;
-                        slot_map.insert(n.clone(), s);
-                        next_slot += 1;
-                        s
-                    };
-                    format!("STORE {s}")
-                }
-                casm::OpCode::Load(ref n) => {
-                    let s = if let Some(&slot) = slot_map.get(n) {
-                        slot
-                    } else {
-                        let s = next_slot;
-                        slot_map.insert(n.clone(), s);
-                        next_slot += 1;
-                        s
-                    };
-                    format!("LOAD {s}")
-                }
-                casm::OpCode::ExportVar(ref n) => format!("EXPORT_VAR {n}"),
-                casm::OpCode::ImportVar(ref n) => format!("IMPORT_VAR {n}"),
-
-                // Arithmetic
-                casm::OpCode::Add => "ADD".into(),
-                casm::OpCode::Sub => "SUB".into(),
-                casm::OpCode::Mul => "MUL".into(),
-                casm::OpCode::Div => "DIV".into(),
-                casm::OpCode::Mod => "MOD".into(),
-                casm::OpCode::Neg => "NEG".into(),
-
-                // Comparison
-                casm::OpCode::Eq => "EQ".into(),
-                casm::OpCode::Ne => "NE".into(),
-                casm::OpCode::Lt => "LT".into(),
-                casm::OpCode::Gt => "GT".into(),
-                casm::OpCode::Le => "LE".into(),
-                casm::OpCode::Ge => "GE".into(),
-
-                // Logical
-                casm::OpCode::And => "AND".into(),
-                casm::OpCode::Or => "OR".into(),
-                casm::OpCode::Not => "NOT".into(),
-
-                // Bitwise
-                casm::OpCode::BitAnd => "BITAND".into(),
-                casm::OpCode::BitOr => "BITOR".into(),
-                casm::OpCode::BitXor => "BITXOR".into(),
-                casm::OpCode::BitNot => "BITNOT".into(),
-                casm::OpCode::Shl => "SHL".into(),
-                casm::OpCode::Shr => "SHR".into(),
-
-                // Control flow
-                casm::OpCode::Jmp(t) => format!(
-                    "JMP {}",
-                    targets.get(&t).cloned().unwrap_or("UNKNOWN".into())
-                ),
-                casm::OpCode::JmpIf(t) => format!(
-                    "JNZ {}",
-                    targets.get(&t).cloned().unwrap_or("UNKNOWN".into())
-                ),
-                casm::OpCode::JmpIfNot(t) => format!(
-                    "JZ {}",
-                    targets.get(&t).cloned().unwrap_or("UNKNOWN".into())
-                ),
-                casm::OpCode::Call(ref n) => {
-                    if local_funcs.contains(n) {
-                        format!("CALL {n}")
-                    } else {
-                        format!("CAP_CALL {n:?} 0")
-                    }
-                }
-                casm::OpCode::Ret => "RET".into(),
-                casm::OpCode::Break => "BREAK".into(),
-                casm::OpCode::Continue => "CONTINUE".into(),
-                casm::OpCode::Spawn => "SPAWN".into(),
-                casm::OpCode::Yield => "YIELD".into(),
-                casm::OpCode::Await { ref handle } => format!("AWAIT {handle}"),
-                casm::OpCode::EnterTry => "ENTER_TRY".into(),
-                casm::OpCode::ExitTry => "EXIT_TRY".into(),
-                casm::OpCode::Throw => "THROW".into(),
-
-                // Arrays
-                // crush-frontend emits `new_array <capacity>` followed by one
-                // `array_push` per element; CVM1's `NEW_ARRAY n` instead pops n
-                // elements, so start from an empty array.
-                casm::OpCode::NewArray(_) => "NEW_ARRAY 0".to_string(),
-                casm::OpCode::ArrGet => "ARR_GET".into(),
-                casm::OpCode::ArrSet => "ARR_SET".into(),
-                casm::OpCode::ArrLen => "ARR_LEN".into(),
-                casm::OpCode::ArrPush => "ARR_PUSH".into(),
-                casm::OpCode::ArrPop => "ARR_POP".into(),
-                casm::OpCode::Index => "ARR_GET".into(),
-                casm::OpCode::Len => "ARR_LEN".into(),
-                casm::OpCode::ArrayPush => "ARR_PUSH".into(),
-                casm::OpCode::ArrayPop => "ARR_POP".into(),
-                casm::OpCode::MakeRange => "MAKE_RANGE".into(),
-
-                // Collections
-                casm::OpCode::NewTuple(sz) => format!("NEW_TUPLE {sz}"),
-                casm::OpCode::TuplePush => "TUPLE_PUSH".into(),
-                casm::OpCode::NewList(sz) => format!("NEW_LIST {sz}"),
-                casm::OpCode::ListPush => "LIST_PUSH".into(),
-                casm::OpCode::NewVector(sz) => format!("NEW_VECTOR {sz}"),
-                casm::OpCode::VectorPush => "VECTOR_PUSH".into(),
-                casm::OpCode::NewSet(sz) => format!("NEW_SET {sz}"),
-                casm::OpCode::SetPush => "SET_PUSH".into(),
-
-                // Objects
-                casm::OpCode::NewObj => "NEW_OBJ".into(),
-                casm::OpCode::NewStruct(ref n) => format!("NEW_STRUCT {n}"),
-                casm::OpCode::GetField(ref n) => format!("GET_FIELD {n:?}"),
-                casm::OpCode::SetField(ref n) => format!("SET_FIELD {n:?}"),
-
-                // Types
-                casm::OpCode::TypeOf => "TYPEOF".into(),
-                casm::OpCode::Cast(ref t) => format!("CAST {t}"),
-
-                // Capability / polyglot
-                casm::OpCode::CapCall { ref name, argc } => format!("CAP_CALL {name:?} {argc}"),
-                casm::OpCode::CallHost {
-                    ref capsule,
-                    ref method,
-                    argc,
-                    ..
-                } => {
-                    format!("CALL_HOST {capsule:?} {method:?} {argc}")
-                }
-                casm::OpCode::CallInterface {
-                    ref handle,
-                    ref method,
-                    argc,
-                } => {
-                    format!("CALL_INTERFACE {handle} {method} {argc}")
-                }
-                casm::OpCode::ExecLang {
-                    ref lang,
-                    ref code,
-                    var_count,
-                } => {
-                    format!("EXEC_LANG {lang:?} {code:?} {var_count}")
-                }
-
-                // String intrinsics
-                casm::OpCode::StrContains => "STR_CONTAINS".into(),
-                casm::OpCode::StrSplit => "STR_SPLIT".into(),
-                casm::OpCode::StrReplace => "STR_REPLACE".into(),
-                casm::OpCode::StrJoin => "STR_JOIN".into(),
-                casm::OpCode::StrStartsWith => "STR_STARTS_WITH".into(),
-                casm::OpCode::StrEndsWith => "STR_ENDS_WITH".into(),
-                casm::OpCode::StrToUpper => "STR_TO_UPPER".into(),
-                casm::OpCode::StrToLower => "STR_TO_LOWER".into(),
-                casm::OpCode::StrTrim => "STR_TRIM".into(),
-
-                // Math
-                casm::OpCode::MathPow => "MATH_POW".into(),
-                casm::OpCode::MathSqrt => "MATH_SQRT".into(),
-                casm::OpCode::MathAbs => "MATH_ABS".into(),
-                casm::OpCode::MathRound => "MATH_ROUND".into(),
-                casm::OpCode::MathFloor => "MATH_FLOOR".into(),
-                casm::OpCode::MathCeil => "MATH_CEIL".into(),
-
-                // Program control
-                casm::OpCode::Halt => "HALT".into(),
-
-                // AI / DOM / catch-all: translate as NOP with a comment so
-                // assembly still round-trips through the assembler, but these
-                // opcodes aren't meaningful in the notebook's CVM1 path.
-                casm::OpCode::AiQuery(_)
-                | casm::OpCode::AiAdaptationRequest(_)
-                | casm::OpCode::AiCapabilityDiscovery(_)
-                | casm::OpCode::AiSemanticSwitch(_)
-                | casm::OpCode::AiToolchain(_)
-                | casm::OpCode::AiAgentDelegation(_)
-                | casm::OpCode::AiLearningLoop(_)
-                | casm::OpCode::AiContextAware(_)
-                | casm::OpCode::AiSemanticMatch(_)
-                | casm::OpCode::AiSynthesize(_)
-                | casm::OpCode::AiGoalDeclaration(_)
-                | casm::OpCode::AiProgressUpdate(_)
-                | casm::OpCode::AiKnowledgeSharing(_)
-                | casm::OpCode::DomQuery(_)
-                | casm::OpCode::DomMutate(_)
-                | casm::OpCode::DomEventListener(_) => "NOP  ; ai/dom opcode".to_string(),
-            };
-            lines.push(format!("    {op}"));
-        }
-    }
-    Ok(lines.join("\n"))
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -1906,7 +1729,7 @@ async fn main() -> Result<()> {
             "crush_notebook=info"
         })
         .init();
-    tracing::info!("Crush-Notebook Kernel v0.1.0");
+    tracing::info!("Crush-Notebook Kernel v{}", env!("CARGO_PKG_VERSION"));
     run().await
 }
 
@@ -2109,13 +1932,15 @@ mod tests {
     fn nb_041_array_literals_lower_to_cvm1() {
         // crush-frontend emits `new_array <capacity>` + one `array_push` per
         // element; lowering it as CVM1 `NEW_ARRAY n` popped n stack slots.
-        let program =
-            crush_frontend::compile_crush_source("fn main() {\nreturn [\"a\", 2]\n}").unwrap();
-        let result = run_cvm1(&program).expect("array literal should run on CVM1");
-        let value = SessionValue::from_vm(result.stack.last().unwrap()).unwrap();
+        let mut vars = Vars::new();
+        let (state, outputs, _) = vars.eval("let a = [\"a\", 2]", &CellKind::Crush, 1);
+        assert_eq!(state, CellState::Done, "{outputs:?}");
         assert_eq!(
-            value,
-            SessionValue::Array(vec![SessionValue::Str("a".into()), SessionValue::Int(2)])
+            binding(&vars, "a"),
+            Some(&SessionValue::Array(vec![
+                SessionValue::Str("a".into()),
+                SessionValue::Int(2)
+            ]))
         );
     }
 
@@ -2143,239 +1968,139 @@ mod tests {
         let _ = std::fs::remove_file(&nb_path);
     }
 
-    // ── Unit: casm_to_assembly ──────────────────────────────────────────
+    // ── NB-044: cells print, use the full language, share definitions ──
 
-    #[test]
-    fn casm_to_assembly_valid_program() {
-        let program = casm::Program {
-            version: "1.0".into(),
-            functions: [(
-                "main".into(),
-                casm::Function {
-                    params: vec![],
-                    locals: vec![],
-                    type_hints: None,
-                    body: vec![
-                        casm::Instruction {
-                            op: "push_int".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"value": 42}),
-                        },
-                        casm::Instruction {
-                            op: "halt".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({}),
-                        },
-                    ],
-                },
-            )]
-            .into_iter()
-            .collect(),
-            manifest: casm::Manifest::default(),
-            lang: Some("crush".into()),
-        };
-
-        let asm = casm_to_assembly(&program).expect("valid program should lower");
-        assert!(
-            asm.contains(".func main"),
-            "asm should contain .func main: {asm}"
-        );
-        assert!(asm.contains("PUSH 42"), "asm should contain PUSH 42: {asm}");
-        assert!(asm.contains("HALT"), "asm should contain HALT: {asm}");
+    /// Run `cells` in order in a fresh session; every cell must finish.
+    /// Returns each cell's printed output.
+    fn run_cells(cells: &[&str]) -> (Vars, Vec<String>) {
+        let mut vars = Vars::new();
+        let mut printed = Vec::new();
+        for (i, source) in cells.iter().enumerate() {
+            let (state, outputs, _) = vars.eval(source, &CellKind::Crush, i + 1);
+            assert_eq!(
+                state,
+                CellState::Done,
+                "cell {} should finish: {source}\n{outputs:?}",
+                i + 1
+            );
+            printed.push(
+                outputs
+                    .iter()
+                    .filter(|o| o.id.starts_with("out-"))
+                    .map(|o| match &o.kind {
+                        OutputKind::Text { text } => text.clone(),
+                        other => panic!("unexpected output {other:?}"),
+                    })
+                    .collect(),
+            );
+        }
+        (vars, printed)
     }
 
     #[test]
-    fn casm_to_assembly_unknown_opcode_is_error() {
-        let program = casm::Program {
-            version: "1.0".into(),
-            functions: [(
-                "main".into(),
-                casm::Function {
-                    params: vec![],
-                    locals: vec![],
-                    type_hints: None,
-                    body: vec![
-                        casm::Instruction {
-                            op: "push_int".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"value": 1}),
-                        },
-                        casm::Instruction {
-                            op: "bogus_opcode".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({}),
-                        },
-                    ],
-                },
-            )]
-            .into_iter()
-            .collect(),
-            manifest: casm::Manifest::default(),
-            lang: None,
-        };
-
-        let err = casm_to_assembly(&program).expect_err("bogus opcode should error");
-        assert!(
-            err.contains("bad opcode") || err.contains("UnknownOpcode"),
-            "error should mention bad/unknown opcode: {err}"
-        );
+    fn nb_044_print_runs() {
+        let (_, printed) = run_cells(&["print(1)"]);
+        assert_eq!(printed, ["1\n"]);
     }
 
     #[test]
-    fn casm_to_assembly_jmp_targets() {
-        let program = casm::Program {
-            version: "1.0".into(),
-            functions: [(
-                "main".into(),
-                casm::Function {
-                    params: vec![],
-                    locals: vec![],
-                    type_hints: None,
-                    body: vec![
-                        casm::Instruction {
-                            op: "push_int".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"value": 0}),
-                        },
-                        casm::Instruction {
-                            op: "store".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"name": "i"}),
-                        },
-                        casm::Instruction {
-                            op: "load".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"name": "i"}),
-                        },
-                        casm::Instruction {
-                            op: "push_int".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"value": 10}),
-                        },
-                        casm::Instruction {
-                            op: "lt".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({}),
-                        },
-                        casm::Instruction {
-                            op: "jmp_if_not".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"target": 8}),
-                        },
-                        casm::Instruction {
-                            op: "load".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"name": "i"}),
-                        },
-                        casm::Instruction {
-                            op: "push_int".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"value": 1}),
-                        },
-                        casm::Instruction {
-                            op: "add".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({}),
-                        },
-                        casm::Instruction {
-                            op: "store".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"name": "i"}),
-                        },
-                        casm::Instruction {
-                            op: "jmp".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"target": 2}),
-                        },
-                        casm::Instruction {
-                            op: "halt".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({}),
-                        },
-                    ],
-                },
-            )]
-            .into_iter()
-            .collect(),
-            manifest: casm::Manifest::default(),
-            lang: None,
-        };
-
-        let asm = casm_to_assembly(&program).expect("jmp program should lower");
-        // Labels should be generated for jump targets
-        assert!(asm.contains("JMP"), "asm should contain JMP: {asm}");
-        assert!(
-            asm.contains("JZ"),
-            "asm should contain JZ for jmp_if_not: {asm}"
-        );
+    fn nb_044_booleans_and_if() {
+        let (vars, printed) = run_cells(&[
+            "let x = true\nprint(x)",
+            "if x && !false {\n  print(\"yes\")\n} else {\n  print(\"no\")\n}",
+        ]);
+        assert_eq!(printed, ["true\n", "yes\n"]);
+        assert_eq!(binding(&vars, "x"), Some(&SessionValue::Bool(true)));
     }
 
     #[test]
-    fn casm_to_assembly_load_store_maps_slots() {
-        let program = casm::Program {
-            version: "1.0".into(),
-            functions: [(
-                "main".into(),
-                casm::Function {
-                    params: vec![],
-                    locals: vec![],
-                    type_hints: None,
-                    body: vec![
-                        casm::Instruction {
-                            op: "push_int".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"value": 5}),
-                        },
-                        casm::Instruction {
-                            op: "store".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"name": "x"}),
-                        },
-                        casm::Instruction {
-                            op: "load".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({"name": "x"}),
-                        },
-                        casm::Instruction {
-                            op: "halt".into(),
-                            lang: None,
-                            meta: None,
-                            args: serde_json::json!({}),
-                        },
-                    ],
-                },
-            )]
-            .into_iter()
-            .collect(),
-            manifest: casm::Manifest::default(),
-            lang: None,
-        };
+    fn nb_044_try_catch() {
+        let (_, printed) =
+            run_cells(&["try {\n  throw \"disk full\"\n} catch e {\n  print(\"caught: \" + e)\n}"]);
+        assert_eq!(printed, ["caught: disk full\n"]);
+    }
 
-        let asm = casm_to_assembly(&program).expect("load/store program should lower");
+    #[test]
+    fn nb_044_struct_defined_in_one_cell_used_in_the_next() {
+        let (_, printed) = run_cells(&[
+            "struct Point { x, y }\nlet p = new Point()\np.x = 3\np.y = 4\nprint(p.x + p.y)",
+            "let q = new Point()\nq.x = 10\nprint(q.x + p.y)",
+        ]);
+        assert_eq!(printed, ["7\n", "14\n"]);
+    }
+
+    #[test]
+    fn nb_044_arrays() {
+        let (vars, printed) = run_cells(&[
+            "let xs = [1, 2, 3]\nprint(len(xs))",
+            "let total = xs[0] + xs[1] + xs[2]\nprint(total)",
+        ]);
+        assert_eq!(printed, ["3\n", "6\n"]);
+        assert_eq!(binding(&vars, "total"), Some(&SessionValue::Int(6)));
+    }
+
+    #[test]
+    fn nb_044_function_defined_in_one_cell_called_in_a_later_one() {
+        let (_, printed) = run_cells(&[
+            "fn double(n) {\n  return n * 2\n}",
+            "let base = 21",
+            "print(double(base))",
+            // A standalone program sees session functions too.
+            "fn main() {\n  print(double(5))\n}",
+        ]);
+        assert_eq!(printed, ["", "", "42\n", "10\n"]);
+    }
+
+    #[test]
+    fn nb_044_redefining_a_function_replaces_it() {
+        let (vars, printed) = run_cells(&[
+            "fn f() {\n  return 1\n}",
+            "fn f() {\n  return 2\n}",
+            "print(f())",
+        ]);
+        assert_eq!(printed, ["", "", "2\n"]);
+        assert_eq!(vars.functions.len(), 1);
+    }
+
+    #[test]
+    fn nb_044_cells_get_no_filesystem_access() {
+        let mut vars = Vars::new();
+        let (state, outputs, _) =
+            vars.eval("print(fs.exists(\"Cargo.toml\"))", &CellKind::Crush, 1);
+        let CellState::Error { message } = state else {
+            panic!("fs.exists must be refused by default: {outputs:?}");
+        };
         assert!(
-            asm.contains("STORE 0"),
-            "first store should be slot 0: {asm}"
+            message.contains("fs.exists"),
+            "refusal names the capability: {message}"
         );
-        assert!(asm.contains("LOAD 0"), "first load should be slot 0: {asm}");
+        // Positive control: the same program shape with a granted capability runs.
+        let (state, _, _) = vars.eval("print(str.len(\"abc\"))", &CellKind::Crush, 2);
+        assert_eq!(state, CellState::Done);
+    }
+
+    #[test]
+    fn nb_044_standalone_program_prints() {
+        let (_, printed) = run_cells(&["fn main() {\n  let b = false\n  print(b)\n}"]);
+        assert_eq!(printed, ["false\n"]);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn nb_044_jit_tier_runs_pure_programs_and_leaves_printing_to_cvm1() {
+        let mut vars = Vars::new();
+        let (_, _, stats) = vars.eval("fn main() {\n  return 2 + 3\n}", &CellKind::Crush, 1);
+        assert_eq!(stats.unwrap().tier, ExecutionTier::Jit);
+        let (_, _, stats) = vars.eval("fn main() {\n  print(2 + 3)\n}", &CellKind::Crush, 2);
+        assert_eq!(stats.unwrap().tier, ExecutionTier::Cvm1);
+    }
+
+    #[test]
+    fn nb_044_defines_main_detection() {
+        assert!(defines_main("fn main() {}"));
+        assert!(defines_main("  pub fn main () {\n}"));
+        assert!(!defines_main("fn mainly() {}"));
+        assert!(!defines_main("print(\"fn main()\")"));
     }
 
     // ── Unit: fastvm_output ──────────────────────────────────────────────

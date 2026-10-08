@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-10-07
+
+### Fixed
+- Crush cells can print. 0.1.0 assembled cells without declaring any
+  capability, so every `print` failed with `capability not declared in
+  manifest: io.print`.
+- Crush cells compile and lower through crush-ast's own pipeline
+  (`crush-frontend`, then `crush-lang-sdk`'s lowering, as `crush run` does)
+  instead of the kernel's own CASM-to-assembly translation, which rejected
+  `true`/`false`, `try`/`catch`, structs and other constructs.
+- With `--features jit`, standalone `fn main` cells that print run on CVM1
+  instead of the JIT, which printed nothing.
+
+### Added
+- Functions and structs declared in one cell can be used in later cells.
+- Cells run with the capabilities `crush run` grants by default (`print`, the
+  `str.*`/`conv.*` built-ins, `cson.parse`) and nothing else. The README
+  documents the grant.
+
+### Changed
+- Cells are parsed as scripts, so a cell can mix top-level `fn`/`struct`
+  declarations with statements.
+- The kernel depends on `crush-lang-sdk` (without default features).
+- A standalone `fn main` cell can now call functions defined in earlier cells.
+
 ## [0.1.0] - 2026-10-07
 
 First public release.
@@ -31,4 +56,5 @@ First public release.
 - The default build fetches ONNX Runtime binaries at build time (through
   `crush-vm`'s `native-plugins` feature).
 
+[0.1.1]: https://github.com/nixpt/crush-notebook/releases/tag/v0.1.1
 [0.1.0]: https://github.com/nixpt/crush-notebook/releases/tag/v0.1.0

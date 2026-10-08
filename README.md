@@ -23,7 +23,7 @@ stored and rendered but not executed yet; see [Cell kinds](#cell-kinds).
 | Crate | What it is |
 |-------|------------|
 | `crush-notebook-core` | The document model: `NotebookDocument`, `Cell`, `CellKind`, `CellState`, outputs, annotations. Matches `schemas/notebook.schema.json`. |
-| `crush-notebook-kernel` | The `crush-notebook-kernel` binary: an MCP server that evaluates cells with `crush-frontend` + `crush-vm`. |
+| `crush-notebook-kernel` | The `crush-notebook-kernel` binary: an MCP server that evaluates cells with `crush-frontend`, `crush-lang-sdk` and `crush-vm`. |
 | `crush-notebook-render` | `render_html()` and the `crush-notebook-render` binary: notebook to a self-contained HTML page. |
 
 ## Quick start
@@ -96,7 +96,7 @@ it. See [docs/AGENT-NATIVE.md](docs/AGENT-NATIVE.md) for the agent workflow.
 
 | Kind | Status |
 |------|--------|
-| `crush` | **Runs.** Compiled by `crush-frontend`, executed on the CVM1 interpreter (`crush-vm`). Variables persist across cells (see below). |
+| `crush` | **Runs.** Compiled by `crush-frontend` and lowered by `crush-lang-sdk`, the same path as `crush run`, then executed on the CVM1 interpreter (`crush-vm`). Variables, functions and structs persist across cells (see below). |
 | `sona` | **Runs, as Crush.** crush-ast has no separate Sona parser yet: these cells compile through the Crush front end and are tagged `sona`. |
 | `nepali` | **Runs, as Crush.** Same as `sona`: tagged `nepali`, compiled by the Crush front end. |
 | `markdown` | Rendered; nothing to execute. |
@@ -104,26 +104,51 @@ it. See [docs/AGENT-NATIVE.md](docs/AGENT-NATIVE.md) for the agent workflow.
 | `ai_query`, `ai_generated` | Stored and rendered, not executed. The kernel has no model backend; an agent answers the query and adds the proposal with `notebook_insert_cell`. |
 | `ai_agent_delegate` | Sends the cell's task to another agent through an external `squad-msg`-style command (`CRUSH_NOTEBOOK_SQUAD_MSG`, default `squad-msg`); the cell stays `ai_pending`. Only useful where such a command exists. |
 
-### Variables across cells
+### What a cell may do
 
-Each Crush-family cell runs as the body of `main`, with every session variable
-declared in front of it. Afterwards the kernel keeps the cell's top-level `let`
-bindings and any session variables the cell reassigned. Limits:
+A cell runs with the capabilities `crush run FILE` grants when given no flags:
+
+- `print` and the other VM built-ins (`str.len`, `str.concat`, `str.contains`,
+  `str.split`, `str.join`, `str.replace`, `conv.chr`, `conv.ord`; `io.read`
+  sees an empty input),
+- `cson.parse`.
+
+Nothing else: no filesystem, network, environment, process, clock, crypto or
+polyglot (`@python { … }`) access. A cell that calls one of those ends in an
+error naming the capability (for example `unknown capability: fs.read`).
+
+### Sharing between cells
+
+Each Crush-family cell is parsed as a script, the way `crush run` reads a
+`.crush` file: top-level statements form `main`, and top-level `fn` and
+`struct` declarations are allowed. The kernel puts the session in front of the
+cell (structs, then variables, with the session's functions alongside), runs
+it, and then keeps:
+
+- every top-level `fn` and `struct` the cell declares (a later declaration with
+  the same name replaces the earlier one),
+- the cell's top-level `let` bindings and any session variables it reassigned.
+
+Limits:
 
 - Only values with a literal form cross a cell boundary: null, bool, int,
   float, string, and arrays/maps of those. Other values stay in their cell,
   and the cell output says so.
 - A cell that contains `return` can read session variables, but its own
   bindings are not kept.
-- A cell that defines its own `fn main` is a standalone program and doesn't
-  touch the session.
+- A cell that defines its own `fn main` is a standalone program: it can use
+  the session's functions and structs, but doesn't see or change its
+  variables.
+- A struct instance crosses a cell boundary as a map of its fields.
 - Opening a notebook starts a fresh session.
 
 ### Execution tiers
 
 Session cells run on CVM1. Building the kernel with `--features jit` adds the
-Cranelift JIT (`crush-jit`) for standalone `fn main` Crush cells, falling back to
-FastVM when the JIT can't compile a program. The feature is off by default.
+Cranelift JIT (`crush-jit`) for standalone `fn main` Crush cells that call no
+capabilities (no `print`), falling back to FastVM when the JIT can't compile a
+program. Programs that call a capability run on CVM1. The feature is off by
+default.
 
 ## Developing
 
@@ -141,6 +166,7 @@ crush-frontend = { path = "../crush-ast/crates/crush-frontend" }
 crush-vm = { path = "../crush-ast/crates/crush-vm" }
 casm = { path = "../crush-ast/crates/casm" }
 crush-cast = { path = "../crush-ast/crates/crush-cast" }
+crush-lang-sdk = { path = "../crush-ast/crates/crush-lang-sdk" }
 ```
 
 The default build enables `crush-vm`'s `native-plugins` feature (the kernel
