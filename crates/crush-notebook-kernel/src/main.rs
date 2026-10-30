@@ -246,12 +246,7 @@ impl Vars {
             body.extend(
                 self.bindings
                     .iter()
-                    .map(|(name, value)| Statement::VarDecl {
-                        name: name.clone(),
-                        value: value.to_expr(),
-                        type_hint: Default::default(),
-                        meta: HashMap::new(),
-                    }),
+                    .flat_map(|(name, value)| value.to_statements(name)),
             );
         }
         body.append(&mut main.body);
@@ -273,7 +268,11 @@ impl Vars {
             });
         }
         main.body = body;
-        crush_lang_sdk::compile::prepare_polyglot_blocks(&mut program);
+        // A polyglot block's marshaling can be refused here (an unbound `->`
+        // output, …): that is the cell's compile error, as in `crush run`.
+        if let Err(e) = crush_lang_sdk::compile::prepare_polyglot_blocks(&mut program) {
+            return error_cell(run, format!("Compile: {e:#}"));
+        }
         let mut casm_program = match crush_frontend::compile_cast_owned(program) {
             Ok(p) => p,
             Err(e) => return error_cell(run, format!("Compile: {e}")),
@@ -375,10 +374,34 @@ enum SessionValue {
     Str(String),
     Array(Vec<SessionValue>),
     Map(Vec<(String, SessionValue)>),
+    /// A struct instance (a COSM record): its struct's name and its fields, in
+    /// print order. Only as a session variable's own value: one nested in an
+    /// array, map or another record is not carried (it has no single-expression
+    /// form to rebuild it from).
+    Record {
+        kind: String,
+        fields: Vec<(String, SessionValue)>,
+    },
 }
 
 impl SessionValue {
     fn from_vm(value: &crush_vm::vm::Value) -> Option<Self> {
+        if let crush_vm::vm::Value::Record(record) = value {
+            let fields = record
+                .fields()
+                .iter()
+                .map(|(k, v)| SessionValue::from_vm_nested(v).map(|v| (k.clone(), v)))
+                .collect::<Option<Vec<_>>>()?;
+            return Some(SessionValue::Record {
+                kind: record.kind.name().to_string(),
+                fields,
+            });
+        }
+        SessionValue::from_vm_nested(value)
+    }
+
+    /// A value inside an array, map or record: anything but a record.
+    fn from_vm_nested(value: &crush_vm::vm::Value) -> Option<Self> {
         use crush_vm::vm::Value as V;
         Some(match value {
             V::Null => SessionValue::Null,
@@ -390,20 +413,51 @@ impl SessionValue {
                 items
                     .borrow()
                     .iter()
-                    .map(SessionValue::from_vm)
+                    .map(SessionValue::from_vm_nested)
                     .collect::<Option<_>>()?,
             ),
             V::Map(map) => {
                 let mut entries = map
                     .borrow()
                     .iter()
-                    .map(|(k, v)| SessionValue::from_vm(v).map(|v| (k.clone(), v)))
+                    .map(|(k, v)| SessionValue::from_vm_nested(v).map(|v| (k.clone(), v)))
                     .collect::<Option<Vec<_>>>()?;
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                 SessionValue::Map(entries)
             }
             _ => return None,
         })
+    }
+
+    /// The statements that bind `name` to this value at the start of a cell:
+    /// `let name = <literal>`, or for a record `let name = new Kind()` and one
+    /// field assignment per field.
+    fn to_statements(&self, name: &str) -> Vec<Statement> {
+        let decl = |value| Statement::VarDecl {
+            name: name.to_string(),
+            value,
+            type_hint: Default::default(),
+            meta: HashMap::new(),
+        };
+        match self {
+            SessionValue::Record { kind, fields } => {
+                let mut out = vec![decl(Expression::NewStruct {
+                    name: kind.clone(),
+                    meta: HashMap::new(),
+                })];
+                out.extend(fields.iter().map(|(field, value)| Statement::SetField {
+                    target: Expression::Var {
+                        name: name.to_string(),
+                        meta: HashMap::new(),
+                    },
+                    field: field.clone(),
+                    value: value.to_expr(),
+                    meta: HashMap::new(),
+                }));
+                out
+            }
+            other => vec![decl(other.to_expr())],
+        }
     }
 
     fn to_expr(&self) -> Expression {
@@ -437,6 +491,12 @@ impl SessionValue {
                     .collect(),
                 meta,
             },
+            // never nested (from_vm_nested refuses it); a top-level record is
+            // rebuilt by to_statements
+            SessionValue::Record { kind, .. } => Expression::NewStruct {
+                name: kind.clone(),
+                meta,
+            },
         }
     }
 
@@ -449,6 +509,7 @@ impl SessionValue {
             SessionValue::Str(_) => "str",
             SessionValue::Array(_) => "array",
             SessionValue::Map(_) => "map",
+            SessionValue::Record { .. } => "struct",
         }
     }
 
@@ -462,7 +523,10 @@ impl SessionValue {
             SessionValue::Array(items) => {
                 Value::Array(items.iter().map(SessionValue::to_json).collect())
             }
-            SessionValue::Map(entries) => Value::Object(
+            SessionValue::Map(entries)
+            | SessionValue::Record {
+                fields: entries, ..
+            } => Value::Object(
                 entries
                     .iter()
                     .map(|(k, v)| (k.clone(), v.to_json()))
@@ -1490,12 +1554,14 @@ fn find_cell_index(doc: &NotebookDocument, cell_id: &str) -> usize {
 /// What a cell may do: the host capabilities a notebook cell runs with.
 ///
 /// This is exactly what `crush run FILE` grants with no flags: the VM's
-/// built-ins (`io.print`, the `str.*` and `conv.*` helpers; `io.read` sees an
-/// empty stdin) plus `cson.parse`. No filesystem, network, environment,
-/// process, clock, crypto or polyglot (`@python`/`@javascript`) access: a cell
-/// that calls one of those is refused by the VM.
+/// built-ins (`io.print`; `io.read` sees an empty stdin), the pure standard
+/// library (`str.*`, `math.*`, `conv.*`, `json.*`, `collections.*`, `regex.*`,
+/// `path.*`, ...: crush-ast registers it by default since CRUSH-113) and
+/// `caison.parse`. No filesystem, network, environment, process, clock, crypto
+/// or polyglot (`@python`/`@javascript`) access: a cell that calls one of
+/// those is refused by the VM.
 fn default_host_caps() -> crush_vm::HostCaps {
-    crush_lang_sdk::HostCapsBuilder::new().build()
+    crush_lang_sdk::HostCapsBuilder::new().stdlib(true).build()
 }
 
 /// Lower a compiled program to CVM1 with crush-lang-sdk and run it on the
@@ -1512,6 +1578,17 @@ fn run_cvm1(casm_program: &casm::Program) -> Result<crush_vm::VmResult, String> 
         ..Default::default()
     };
     let caps = default_host_caps();
+    // As `crush run` does: a program that can reach a capability the cell is
+    // not granted is refused before any of it runs (otherwise, e.g., an
+    // ungranted `ai_native.*` call quietly evaluated to null).
+    let missing = crush_lang_sdk::effects::missing_grants(&program, Some(&caps))
+        .map_err(|e| format!("Lower: {e}"))?;
+    if !missing.is_empty() {
+        return Err(format!(
+            "this program needs capabilities this run does not grant; nothing was run:\n{}",
+            crush_lang_sdk::effects::describe_missing(&missing)
+        ));
+    }
     crush_vm::run_with_caps(&program, &quotas, Some(&caps)).map_err(|e| format!("VM error: {e}"))
 }
 
@@ -2077,6 +2154,48 @@ mod tests {
         // Positive control: the same program shape with a granted capability runs.
         let (state, _, _) = vars.eval("print(str.len(\"abc\"))", &CellKind::Crush, 2);
         assert_eq!(state, CellState::Done);
+    }
+
+    /// What `crush run` registers with no flags includes the pure standard
+    /// library (crush-ast CRUSH-113).
+    #[test]
+    fn cells_get_the_standard_library() {
+        let (_, printed) = run_cells(&[
+            "print(str.to_upper(\"ab\"))",
+            "print(math.sqrt(16))",
+            "print(conv.to_int(\"42\") + 1)",
+            "print(str.join(str.split(\"a,b\", \",\"), \"+\"))",
+        ]);
+        assert_eq!(printed, ["AB\n", "4.0\n", "43\n", "a+b\n"]);
+    }
+
+    /// As `crush run`: a cell that can reach an ungranted capability is refused
+    /// before any of it runs, naming what it needs.
+    #[test]
+    fn ungranted_capabilities_are_refused_before_running() {
+        let mut vars = Vars::new();
+        for (source, needs) in [
+            ("print(\"first\")\nprint(fs.read(\"x\"))", "fs.read"),
+            (
+                "let m = ai_semantic_match(\"refund\", \"billing\", 0.8)\nprint(m)",
+                "ai_native.semantic_match",
+            ),
+        ] {
+            let (state, outputs, _) = vars.eval(source, &CellKind::Crush, 1);
+            let CellState::Error { message } = state else {
+                panic!("{source}: must be refused, got {outputs:?}");
+            };
+            assert!(
+                message.contains("nothing was run") && message.contains(needs),
+                "{source}: {message}"
+            );
+            assert!(
+                !outputs.iter().any(
+                    |o| matches!(&o.kind, OutputKind::Text { text } if text.contains("first"))
+                ),
+                "{source}: nothing printed before the refusal: {outputs:?}"
+            );
+        }
     }
 
     #[test]

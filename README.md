@@ -108,14 +108,20 @@ it. See [docs/AGENT-NATIVE.md](docs/AGENT-NATIVE.md) for the agent workflow.
 
 A cell runs with the capabilities `crush run FILE` grants when given no flags:
 
-- `print` and the other VM built-ins (`str.len`, `str.concat`, `str.contains`,
-  `str.split`, `str.join`, `str.replace`, `conv.chr`, `conv.ord`; `io.read`
-  sees an empty input),
-- `cson.parse`.
+- `print` (`io.read` sees an empty input),
+- the standard library: `str.*`, `math.*`, `conv.*`, `json.*` and the rest of
+  what crush-ast registers by default,
+- `caison.parse`.
 
 Nothing else: no filesystem, network, environment, process, clock, crypto or
-polyglot (`@python { … }`) access. A cell that calls one of those ends in an
-error naming the capability (for example `unknown capability: fs.read`).
+polyglot (`@python { … }`) access. As with `crush run`, a cell that can reach
+one of those is refused before any of it runs, and the error names the flag
+that would grant it:
+
+```text
+this program needs capabilities this run does not grant; nothing was run:
+  --fs: fs.read
+```
 
 ### Sharing between cells
 
@@ -131,15 +137,17 @@ it, and then keeps:
 
 Limits:
 
-- Only values with a literal form cross a cell boundary: null, bool, int,
-  float, string, and arrays/maps of those. Other values stay in their cell,
-  and the cell output says so.
+- Only these values cross a cell boundary: null, bool, int, float, string,
+  arrays/maps of those, and struct instances whose fields are those. Other
+  values (a struct inside an array or map, a function value) stay in their
+  cell, and the cell output says so.
 - A cell that contains `return` can read session variables, but its own
   bindings are not kept.
 - A cell that defines its own `fn main` is a standalone program: it can use
   the session's functions and structs, but doesn't see or change its
   variables.
-- A struct instance crosses a cell boundary as a map of its fields.
+- A struct instance crosses a cell boundary as an instance of its struct, so
+  a later cell can read and assign its fields.
 - Opening a notebook starts a fresh session.
 
 ### Execution tiers
