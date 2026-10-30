@@ -25,7 +25,9 @@ crush-frontend = { workspace = true }
 crush-vm = { workspace = true }
 casm = { workspace = true }
 crush-cast = { workspace = true }
-crush-lang-sdk = { workspace = true }
+# stdlib: the pure standard library (str.*, math.*, conv.*, json.*, ...) that
+# `crush run` registers with no flags (crush-ast CRUSH-113)
+crush-lang-sdk = { workspace = true, features = ["stdlib"] }
 crush-jit = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

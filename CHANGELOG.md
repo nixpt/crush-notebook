@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-30
+
+### Changed
+- Built on crush-ast 0.8.0 (crates.io), up from 0.3.9: cells get the language
+  as it is today (closures, struct methods, green tasks, declared polyglot
+  outputs, …).
+- A cell that can reach a capability its run does not grant is refused before
+  any of it runs, as `crush run` does, with the flag that would grant it
+  (`--fs: fs.read`). Before, it ran until the call and then failed with
+  `unknown capability`.
+- Struct instances cross cell boundaries as instances of their struct, not
+  as maps of their fields.
+- `cson.parse` is `caison.parse` (crush-ast renamed CSON to CAISON).
+
+### Fixed
+- Cells get the standard library (`str.*`, `math.*`, `conv.*`, `json.*`, …)
+  that `crush run` registers with no flags. 0.1.1 had only the VM built-ins.
+- A polyglot block whose outputs can't be bound is a compile error in the
+  cell, instead of being ignored.
+
 ## [0.1.1] - 2026-10-07
 
 ### Fixed
@@ -56,5 +76,6 @@ First public release.
 - The default build fetches ONNX Runtime binaries at build time (through
   `crush-vm`'s `native-plugins` feature).
 
+[0.2.0]: https://github.com/nixpt/crush-notebook/releases/tag/v0.2.0
 [0.1.1]: https://github.com/nixpt/crush-notebook/releases/tag/v0.1.1
 [0.1.0]: https://github.com/nixpt/crush-notebook/releases/tag/v0.1.0
