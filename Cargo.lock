@@ -154,9 +154,9 @@ dependencies = [
 
 [[package]]
 name = "casm"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1951a48b503a2efaef3095bc31d3f0c28b6dfd7a921c450d50ffee25a75fc93f"
+checksum = "641fbbe46af79344de9f807d2ccc51bb4ad1c4dcab9520613959ca0a05556c74"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -407,9 +407,9 @@ checksum = "48ed47e602652e3410f9387fc0db70fefadcee4d78a78881421aabcab4e26b89"
 
 [[package]]
 name = "crush-caison"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db4e5e4dfa77a5d386078017984190e88d979b2e9c081a5fdfcae41099d48a70"
+checksum = "a325a78a6ebe5e188bb0125df351b99543615fd4bb27a7bd87b6ef42c01ce491"
 dependencies = [
  "caison",
  "crush-vm",
@@ -419,9 +419,9 @@ dependencies = [
 
 [[package]]
 name = "crush-cast"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "598ec0a70f0689370b412c411e6ec1c19502743519e30818e955abacd24284d0"
+checksum = "8b6fdb137298e9931f41b646f4923331acb1c6903e8211f9f2d2adb5035d909a"
 dependencies = [
  "cbor4ii",
  "crush-caison",
@@ -436,9 +436,9 @@ dependencies = [
 
 [[package]]
 name = "crush-cosm"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af494c9bf14d7244028926f45776181cdc89b664ed826b737221713338893a47"
+checksum = "8ec570c3c92debc9cc31ae44566daf118d53ef47bdf9956f534540430fd68f9b"
 dependencies = [
  "serde",
  "serde_json",
@@ -447,9 +447,9 @@ dependencies = [
 
 [[package]]
 name = "crush-diagnostics"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd6e4127e9f9b2291b3d9ea8126ddfe30aff3a682dce2a4658cc880521cb7256"
+checksum = "51b06f3247680dc3a87d4e4cdf34eccd3aeae50ae143289404af8b514f8d8857"
 dependencies = [
  "serde",
  "serde_json",
@@ -457,9 +457,9 @@ dependencies = [
 
 [[package]]
 name = "crush-errors"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b5473952a9d7eacf5dd2d6a371cf972733e50f62de52dcf54c5ad38b5ad48d6"
+checksum = "bf3f992ebcdf24c808f1189e0128dada27957be4abfd0fe41fc26fe36dd5f089"
 dependencies = [
  "regex",
  "serde",
@@ -468,15 +468,15 @@ dependencies = [
 
 [[package]]
 name = "crush-ffi"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04260dfdd0108e9f7563f6bf0604835e35f7860ffac5e7748d0a7139fd77e43f"
+checksum = "bfc5ff18acbac6c2bb21ddb8f1d2bdc2aad87c9872f5b49755fc7602281a3385"
 
 [[package]]
 name = "crush-frontend"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc2648e61d6524a3d5ae0119ebc2f91a4fac106c4ba96459d7677da13ea67ee4"
+checksum = "04bcb878664147e2d36e5f63ed6b01369ddf0135d9f6ed968ed56f15173bafe5"
 dependencies = [
  "anyhow",
  "casm",
@@ -493,9 +493,9 @@ dependencies = [
 
 [[package]]
 name = "crush-index"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09c1a26de1caa230393c0ea6136f119efdd2759625a8ad2c445a709f9defca7"
+checksum = "b3cb6a6306a0095ff179215539c9a96a751e7d9ad38879942eecea52b5884351"
 dependencies = [
  "anyhow",
  "chrono",
@@ -507,9 +507,9 @@ dependencies = [
 
 [[package]]
 name = "crush-jit"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae198868dfbab1cf1b57c2ec918025afd92be09076c327518fa47b3ee10b73be"
+checksum = "432c37c95335f8a4471e1db238f239f4cfde30ff59395017fbc0ef51cd447ef4"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -524,9 +524,9 @@ dependencies = [
 
 [[package]]
 name = "crush-lang-sdk"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5ae883b6697ecc9fa12f7c91aa44de0e2d928f3aa5be88a58b2e1016c653aa2"
+checksum = "35bdc9aaf5dfd588ab4c6d52ff95492b85b056bc8e806b5ea32f34c8a4328af6"
 dependencies = [
  "anyhow",
  "base64",
@@ -535,6 +535,7 @@ dependencies = [
  "clap",
  "crush-caison",
  "crush-cast",
+ "crush-diagnostics",
  "crush-errors",
  "crush-frontend",
  "crush-index",
@@ -552,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "crush-notebook-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -562,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "crush-notebook-kernel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "casm",
@@ -583,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "crush-notebook-render"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -594,9 +595,9 @@ dependencies = [
 
 [[package]]
 name = "crush-vm"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea2f4e2a275d1f00250941d6cbf4b5d9c424d6ba3061e3839d1478829a976ec6"
+checksum = "1ba94ed7e88328b0b21ee4c11d218526b1259528a82a7de72e9b24efac0185a5"
 dependencies = [
  "anyhow",
  "casm",
@@ -616,9 +617,9 @@ dependencies = [
 
 [[package]]
 name = "crush-walker-core"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65def0fd93afb60dda193531d49ab05ffbc5a8b79fa02b08523354660a86dad8"
+checksum = "d68c7659847a37489d3a645630eb3ab13710eb7b3d22b7d17607afc1d343a795"
 dependencies = [
  "anyhow",
  "crush-cast",
