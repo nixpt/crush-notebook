@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-31
+
+### Changed
+
+- Built on crush-ast **0.9.0** (crates.io), up from 0.8.0, so cells get the 0.9.0 language:
+  string and list slices (`s[a:b]`, `s[::step]`), hex and binary integer literals
+  (`0xff`, `0b101`), `@bash` blocks that read the Crush variables they name, and the
+  0.9.0 diagnostics. Every chapter notebook of the Crush language guide (32 notebooks,
+  134 cells) runs clean in this kernel.
+
 ## [0.2.0] - 2026-10-30
 
 ### Changed
