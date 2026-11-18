@@ -1,0 +1,50 @@
+@caison { version: "1.0" }
+
+schema: "milestones/1"
+
+project: {
+  name: "crush-notebook"
+  kind: "repo"
+  lifecycle: "shipped" @verified { at: "2026-11-18", by: "altair" }
+  lifecycle_since: "2026-10-07"
+  home: "zorro"
+  summary: "Crush notebooks: core format + kernel, crush-notebook-core and crush-notebook-kernel 0.3.0 on crates.io (built on crush-ast 0.9.0); the guide's chapters run as notebooks on it; it lags crush-ast 0.11.2"
+  stewards: ["altair"]
+  evidence: {
+    default_branch: "main"
+    registries: [{ registry: "crates.io", name: "crush-notebook-kernel" }, { registry: "crates.io", name: "crush-notebook-core" }]
+  }
+}
+
+milestones: [
+  {
+    id: "N1"
+    title: "first release: format, kernel, CI"
+    status: "done" @verified { at: "2026-11-18", by: "altair" }
+    done_at: "2026-10-07"
+    version: "v0.1.1"
+    done_when: [{ claim: "v0.1.1 tagged", check: { kind: "tag", pattern: "v0.1.1" } }]
+  },
+  {
+    id: "N2"
+    title: "kernel on crush-ast 0.8.0 / 0.9.0"
+    status: "done" @verified { at: "2026-11-18", by: "altair" }
+    done_at: "2026-10-31"
+    done_when: [
+      { claim: "0.2.0 on crush-ast 0.8.0 (PR #1)", check: { kind: "merged", pr: "1" } },
+      { claim: "0.3.0 on crush-ast 0.9.0 (PR #2)", check: { kind: "merged", pr: "2" } },
+      { claim: "crush-notebook-kernel on crates.io", check: { kind: "published", registry: "crates.io", name: "crush-notebook-kernel", version: "0.3.0" } },
+    ]
+    notes: "no v0.3.0 tag exists (latest tag v0.2.0) although 0.3.0 is on crates.io"
+  },
+  {
+    id: "N3"
+    title: "kernel on the crush-ast freeze release"
+    status: "next" @verified { at: "2026-11-18", by: "altair" }
+    depends_on: ["crush-ast:FREEZE"]
+    done_when: [
+      "kernel built on the freeze-release crush-ast; the guide's notebooks report no lag cells",
+      "a saved notebook validates against schemas/notebook.schema.json (schema drift recorded in the guide's TASKS.md, 2026-10-07/08; not re-checked)",
+    ]
+  },
+]
